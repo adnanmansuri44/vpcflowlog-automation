@@ -19,7 +19,7 @@ Parameters:
     MaxLength: 12
   MasterRegion:
     Type: String
-    Description: Region where the Control Tower deployed
+    Description: Region where the Control Tower deployed    
     Default: 'us-east-1'
   FlowLogDestinationAccount:
     Type: String
@@ -32,7 +32,7 @@ Parameters:
     MinLength: 3
     MaxLength: 63
     AllowedPattern: '[a-zA-Z0-9-.]*'
-    Description: Unique name for the S3 bucket in the destination account
+    Description: Name for the buckets where the Flow Logs will be deposited in each region. Name will be suffixed with "-DESTACCOUNTID-REGION"
   EventBusDestinationAccount:
     Type: String
     Description: AWS Account ID where the dedicated Event bus will be created
@@ -50,16 +50,7 @@ Parameters:
     MinValue: 2
     MaxValue: 168
     ConstraintDescription: Compliance Frequency must be a number between 2 and 168, inclusive.
-  QSS3BucketName:
-    Description: Source Lambda zip S3 bucket name, do not change unless requested
-    AllowedPattern: ^[0-9a-zA-Z]+([0-9a-zA-Z-]*[0-9a-zA-Z])*$
-    Default: 'marketplace-sa-resources-ct-us-east-1'
-    Type: String
-  QSS3KeyPrefix:
-    Description: Source Lambda zip objcet prefix, do not change unless requested
-    AllowedPattern: ^[0-9a-zA-Z-/_]*$
-    Default: ''
-    Type: String
+
 Mappings:
   LambdaVariable:
     Tag:
@@ -75,17 +66,26 @@ Mappings:
     Key:
       Activator: "ct_flowlog_activator.zip"
       LifeCycle: "ct_flowlog_lifecycle.zip"
+  S3perRegion:
+    us-east-1:
+      NAME: marketplace-sa-resources-ct-us-east-1
+    us-east-2:
+      NAME: marketplace-sa-resources-ct-us-east-2
+    us-west-2:
+      NAME: marketplace-sa-resources-ct-us-west-2
+    eu-west-1:
+      NAME: marketplace-sa-resources-ct-eu-west-1
+    ap-southeast-2:
+      NAME: marketplace-sa-resources-ct-ap-southeast-2
+    me-south-1:
+      NAME: ct-baseline-template-563319748786-me-south-1
 
 Conditions:
-  CreateS3Bucket: !And
-    - !Equals
-      - !Ref FlowLogDestinationAccount
-      - !Ref AWS::AccountId
-    - !Equals
-      - !Ref MasterRegion
-      - !Ref AWS::Region
+  CreateS3Bucket: !Equals
+    - !Ref FlowLogDestinationAccount
+    - !Ref AWS::AccountId
 
-  OriginRegion: !Equals
+  OriginRegion: !Equals 
     - !Ref MasterRegion
     - !Ref AWS::Region
 
@@ -97,7 +97,7 @@ Conditions:
     - !Equals
       - !Ref EventBusDestinationAccount
       - !Ref AWS::AccountId
-    - !Equals
+    - !Equals 
       - !Ref MasterRegion
       - !Ref AWS::Region
 
@@ -106,130 +106,18 @@ Conditions:
       - !Ref EventBusDestinationAccount
       - !Ref AWS::AccountId
 
+
 Resources:
-
-  LambdaZipsBucket:
-    Condition: CreateEventBus
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: 'AES256'
-  CopyZips:
-    Condition: CreateEventBus
-    Type: Custom::CopyZips
-    Properties:
-      ServiceToken: !GetAtt 'CopyZipsFunction.Arn'
-      DestBucket: !Ref 'LambdaZipsBucket'
-      SourceBucket: !Ref 'QSS3BucketName'
-      Prefix: !Ref 'QSS3KeyPrefix'
-      Objects:
-        - !Join ["/", [!FindInMap ["SourceCode", "Key", "Activator"]]]
-
-  CopyZipsRole:
-    Condition: CreateEventBus
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Path: /
-      Policies:
-        - PolicyName: lambda-copier
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:GetObjectTagging
-                Resource:
-                  - !Sub 'arn:aws:s3:::${QSS3BucketName}/${QSS3KeyPrefix}*'
-              - Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:DeleteObject
-                  - s3:PutObjectTagging
-                Resource:
-                  - !Sub 'arn:aws:s3:::${LambdaZipsBucket}/${QSS3KeyPrefix}*'
-
-  CopyZipsFunction:
-    Condition: CreateEventBus
-    Type: AWS::Lambda::Function
-    Properties:
-      Description: Copies objects from a source S3 bucket to a destination
-      Handler: index.handler
-      Runtime: python3.7
-      Role: !GetAtt 'CopyZipsRole.Arn'
-      Timeout: 240
-      Code:
-        ZipFile: |
-          import json
-          import logging
-          import threading
-          import boto3
-          import cfnresponse
-          def copy_objects(source_bucket, dest_bucket, prefix, objects):
-              s3 = boto3.client('s3')
-              for o in objects:
-                  key = prefix + o
-                  copy_source = {
-                      'Bucket': source_bucket,
-                      'Key': key
-                  }
-                  print('copy_source: %s' % copy_source)
-                  print('dest_bucket = %s'%dest_bucket)
-                  print('key = %s' %key)
-                  s3.copy_object(CopySource=copy_source, Bucket=dest_bucket,
-                        Key=key)
-          def delete_objects(bucket, prefix, objects):
-              s3 = boto3.client('s3')
-              objects = {'Objects': [{'Key': prefix + o} for o in objects]}
-              s3.delete_objects(Bucket=bucket, Delete=objects)
-          def timeout(event, context):
-              logging.error('Execution is about to time out, sending failure response to CloudFormation')
-              cfnresponse.send(event, context, cfnresponse.FAILED, {}, None)
-          def handler(event, context):
-              # make sure we send a failure to CloudFormation if the function
-              # is going to timeout
-              timer = threading.Timer((context.get_remaining_time_in_millis()
-                        / 1000.00) - 0.5, timeout, args=[event, context])
-              timer.start()
-              print('Received event: %s' % json.dumps(event))
-              status = cfnresponse.SUCCESS
-              try:
-                  source_bucket = event['ResourceProperties']['SourceBucket']
-                  dest_bucket = event['ResourceProperties']['DestBucket']
-                  prefix = event['ResourceProperties']['Prefix']
-                  objects = event['ResourceProperties']['Objects']
-                  if event['RequestType'] == 'Delete':
-                      delete_objects(dest_bucket, prefix, objects)
-                  else:
-                      copy_objects(source_bucket, dest_bucket, prefix, objects)
-              except Exception as e:
-                  logging.error('Exception: %s' % e, exc_info=True)
-                  status = cfnresponse.FAILED
-              finally:
-                  timer.cancel()
-                  cfnresponse.send(event, context, status, {}, None)
-
   S3Bucket:
     Condition: CreateS3Bucket
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Ref FlowLogBucketName
+      BucketName: !Sub ${FlowLogBucketName}-${AWS::AccountId}-${AWS::Region}
       BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault: 
               SSEAlgorithm: AES256
     Metadata:
       cfn_nag:
@@ -310,7 +198,7 @@ Resources:
           - Effect: Allow
             Action:
               - sts:AssumeRole
-            Resource:
+            Resource: 
               - !Join ['', ['arn:aws:iam::', '*', ':role/', !FindInMap [LambdaVariable,Role, Spoke]]]
               - !Join ['', ['arn:aws:iam::', !Ref MasterAccount, ':role/', !FindInMap [LambdaVariable,Role, Hub]]]
             Condition:
@@ -331,19 +219,19 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W28
-            reason: "Explicit role name required for reference on other resources"
+            reason: "Explicit role name required for reference on other resources" 
+
 
   FlowLogActivator:
     Condition: CreateEventBus
     Type: "AWS::Lambda::Function"
-    DependsOn: CopyZips
     Properties:
       FunctionName: !Sub ${AWS::AccountId}-FlowLogActivator
       Description: FlowLog - Function to handle incoming events and activate VPC Flow Log in spoke account
       Handler: "ct_flowlog_activator.lambda_handler"
-      Role: !Sub 'arn:aws:iam::${AWS::AccountId}:role/FlowLogActivatorRole'
+      Role: !If [OriginRegion, !GetAtt FlowLogActivatorRole.Arn, !Sub 'arn:aws:iam::${AWS::AccountId}:role/FlowLogActivatorRole']
       Code:
-        S3Bucket: !Ref LambdaZipsBucket
+        S3Bucket: !FindInMap [ S3perRegion, !Ref "AWS::Region", NAME ]
         S3Key: !Join ["/", [!FindInMap ["SourceCode", "Key", "Activator"]]]
       Runtime: "python3.7"
       MemorySize: 128
@@ -353,7 +241,7 @@ Resources:
         Variables:
             assume_role: !FindInMap [LambdaVariable,Role, Spoke]
             org_id: !Ref OrgId
-            s3bucket: !Ref FlowLogBucketName
+            s3bucket: !Sub ${FlowLogBucketName}-${AWS::AccountId}-${AWS::Region}
             master_account: !Ref MasterAccount
             master_role: !FindInMap [LambdaVariable,Role, Hub]
             stackset_name: !Ref StackSetName

@@ -75,15 +75,21 @@ Mappings:
       NAME: marketplace-sa-resources-ct-us-west-2
     eu-west-1:
       NAME: marketplace-sa-resources-ct-eu-west-1
+    eu-west-2:
+      NAME: marketplace-sa-resources-ct-eu-west-2      
     ap-southeast-2:
       NAME: marketplace-sa-resources-ct-ap-southeast-2
     me-south-1:
       NAME: ct-baseline-template-563319748786-me-south-1
 
 Conditions:
-  CreateS3Bucket: !Equals
-    - !Ref FlowLogDestinationAccount
-    - !Ref AWS::AccountId
+  CreateS3Bucket: !And
+    - !Equals
+        - !Ref FlowLogDestinationAccount
+        - !Ref AWS::AccountId
+    - !Equals 
+      - !Ref MasterRegion
+      - !Ref AWS::Region
 
   OriginRegion: !Equals 
     - !Ref MasterRegion
@@ -241,7 +247,7 @@ Resources:
         Variables:
             assume_role: !FindInMap [LambdaVariable,Role, Spoke]
             org_id: !Ref OrgId
-            s3bucket: !Sub ${FlowLogBucketName}-${AWS::AccountId}-${AWS::Region}
+            s3bucket: !Sub ${FlowLogBucketName}-${AWS::AccountId}-${MasterRegion}
             master_account: !Ref MasterAccount
             master_role: !FindInMap [LambdaVariable,Role, Hub]
             stackset_name: !Ref StackSetName
